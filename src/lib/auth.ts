@@ -7,7 +7,12 @@ import { db } from "./db";
 import { hasRole, type Role } from "./constants";
 
 const COOKIE = "session";
-const secret = () => new TextEncoder().encode(process.env.SESSION_SECRET ?? "dev-only-secret");
+function secret() {
+  const value = process.env.SESSION_SECRET;
+  // The fallback is public (it's in the repo), so production must set its own secret.
+  if (!value && process.env.NODE_ENV === "production") throw new Error("SESSION_SECRET must be set in production");
+  return new TextEncoder().encode(value ?? "dev-only-secret");
+}
 
 export async function createSession(userId: string) {
   const token = await new SignJWT({ sub: userId })
