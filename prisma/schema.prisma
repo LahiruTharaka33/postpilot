@@ -1,0 +1,135 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// Statuses and roles are plain strings; allowed values live in src/lib/constants.ts.
+
+model User {
+  id           String       @id @default(cuid())
+  name         String
+  email        String       @unique
+  passwordHash String
+  createdAt    DateTime     @default(now())
+  memberships  Membership[]
+  posts        Post[]
+  activities   Activity[]
+}
+
+model Workspace {
+  id          String          @id @default(cuid())
+  name        String
+  slug        String          @unique
+  createdAt   DateTime        @default(now())
+  memberships Membership[]
+  accounts    SocialAccount[]
+  posts       Post[]
+  media       Media[]
+  invites     Invite[]
+  activities  Activity[]
+}
+
+model Membership {
+  id          String    @id @default(cuid())
+  role        String // OWNER | EDITOR | VIEWER
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, workspaceId])
+}
+
+model Invite {
+  id          String    @id @default(cuid())
+  token       String    @unique
+  email       String
+  role        String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  acceptedAt  DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+model SocialAccount {
+  id          String        @id @default(cuid())
+  platform    String // FACEBOOK | INSTAGRAM | TIKTOK | X | LINKEDIN | YOUTUBE
+  handle      String
+  displayName String
+  avatarColor String
+  // Filled by real connectors later; mock connectors leave a placeholder.
+  accessToken String?
+  status      String        @default("CONNECTED") // CONNECTED | DISCONNECTED
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  createdAt   DateTime      @default(now())
+  variants    PostVariant[]
+}
+
+model Media {
+  id          String    @id @default(cuid())
+  fileName    String
+  url         String
+  type        String // IMAGE | VIDEO
+  mimeType    String
+  width       Int
+  height      Int
+  duration    Float? // seconds, videos only
+  size        Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  createdAt   DateTime  @default(now())
+}
+
+model Post {
+  id          String        @id @default(cuid())
+  baseCaption String
+  mediaIds    String        @default("[]") // JSON array of Media ids, in order
+  status      String        @default("DRAFT") // DRAFT | SCHEDULED | PUBLISHING | PUBLISHED | PARTIAL | FAILED
+  scheduledAt DateTime?
+  timezone    String        @default("UTC")
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  author      User          @relation(fields: [authorId], references: [id])
+  authorId    String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  variants    PostVariant[]
+}
+
+model PostVariant {
+  id            String        @id @default(cuid())
+  post          Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId        String
+  account       SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  accountId     String
+  caption       String? // null = use the post's base caption
+  options       String        @default("{}") // JSON, see PlatformOptions in src/lib/platforms.ts
+  // When this network's version should go out. Networks of one post can have different times;
+  // Post.scheduledAt is the earliest of them.
+  scheduledAt   DateTime?
+  status        String        @default("DRAFT") // DRAFT | SCHEDULED | PUBLISHING | PUBLISHED | FAILED
+  attempts      Int           @default(0)
+  nextAttemptAt DateTime?
+  publishedAt   DateTime?
+  externalUrl   String?
+  error         String?
+
+  @@index([status, nextAttemptAt])
+}
+
+model Activity {
+  id          String    @id @default(cuid())
+  message     String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId      String?
+  createdAt   DateTime  @default(now())
+}

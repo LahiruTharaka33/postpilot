@@ -1,0 +1,109 @@
+# PostPilot
+
+A social media manager: write a post once, adjust it for each network, preview it as it will look, and publish now or schedule it. It supports Facebook, Instagram, TikTok, X, LinkedIn and YouTube Shorts, and teams can manage several brands or clients.
+
+> **Demo mode.** Publishing is simulated by mock connectors, so nothing is sent to the real networks. Every connector implements the same interface (`src/lib/connectors/types.ts`), so real APIs can replace the mocks later without changing the UI.
+
+## Getting started
+
+Requires Node.js 20 or newer and a `.env` file (see **Database** below).
+
+```bash
+npm install
+npm run setup     # applies migrations to the dev schema and loads demo data
+npm run dev       # http://localhost:3000
+```
+
+Demo logins (local only, created by `prisma/seed.ts`):
+
+| Email | Password | Role |
+| --- | --- | --- |
+| owner@demo.test | password123 | Owner of both demo workspaces |
+| viewer@demo.test | password123 | Viewer (read-only) |
+
+Or sign up to create your own account and workspace.
+
+## Database
+
+The app uses Postgres on Neon. One database holds three separate schemas:
+
+| Schema | Used by | Contents |
+| --- | --- | --- |
+| `public` | Production | Your team's real data. Never seeded or wiped. |
+| `dev` | `npm run dev` on your computer | Demo data; `npm run db:seed` resets it. |
+| `postpilot_test` | `npm test` | Wiped by the tests. |
+
+`.env` (never committed) holds:
+
+```
+DATABASE_URL="<Neon pooled URL>&connect_timeout=15&schema=dev"   # app connections
+DIRECT_URL="<Neon direct URL>&connect_timeout=15&schema=dev"     # migrations
+SESSION_SECRET="<random 64 hex characters>"
+```
+
+The direct URL is the pooled one without `-pooler` in the host name. `connect_timeout` gives Neon time to wake a suspended database. For production, use the same URLs **without** `&schema=dev`.
+
+- To change the data model, edit `prisma/schema.prisma`, run `npx prisma migrate dev --name <change>` against the dev schema, and commit the new migration folder.
+- To apply migrations in any environment, run `npm run db:migrate`.
+- The seed refuses to run against `public`.
+
+Host the app in the same region as the database (currently AWS us-east-1). Every page makes several queries, and from far away each one takes about 0.3 s.
+
+## Features
+
+- **Workspaces** for each brand or client, with a switcher in the sidebar. Roles: *owner* (accounts and team), *editor* (create and schedule), *viewer* (read-only). Invite teammates with a link from Team & settings.
+- **Accounts:** connect simulated accounts for each network.
+- **Composer:** one caption for every network, with optional custom captions per network. Upload images and videos, then choose which media each network gets (e.g. the photo for Instagram, the video for TikTok). Per-network crop (1:1, 4:5, 9:16, 16:9, 1.91:1) with a focal point, and settings such as the YouTube title, TikTok privacy, comments and duet, LinkedIn visibility, Instagram Feed or Reel, and a first comment. It also has an emoji picker, your most-used hashtags, and character counters for each network.
+- **Live previews** styled like each network's feed, including caption truncation ("...more").
+- **Validation** against each network's rules (caption length, hashtags, media count and type, video length, aspect ratio, required fields) before anything can be scheduled.
+- **Scheduling** with a time zone picker, publish now, or save as a draft. Tick "Post at a different time on each network" to give each network its own date and time (e.g. Facebook today 5:00 PM, Instagram tomorrow 7:00 AM).
+- **Calendar** with month and week views: drag posts to reschedule, drag drafts onto a day, click a day to start a post, and filter by network or account. A post with several times shows one chip per time (marked ⧉), and dragging a chip moves only those networks.
+- **Posts list** with status filters, retry for failed posts, unschedule, duplicate and delete.
+- **Dashboard** showing counts, upcoming posts, connected accounts and recent activity.
+
+## How publishing works
+
+`src/server/publisher.ts` runs inside the Next.js server and is started from `src/instrumentation.ts`. Every 60 seconds (set with `SCHEDULER_INTERVAL_MS`) it finds post versions that are due and claims each one atomically, so no version is published twice. It then calls that network's connector. A failure is retried after 1 minute and then after 2 more; the third failure marks the version FAILED. The post's status (Published, Partial, Failed...) is derived from its versions.
+
+To test failures, put `#fail` in a caption, or set `MOCK_FAIL_RATE` in `.env` (0 to 1).
+
+## Project layout
+
+```
+prisma/schema.prisma        data model (Postgres)
+prisma/migrations/          database migrations
+prisma/seed.ts              demo data
+src/lib/platforms.ts        rules for each network (limits, crops, options)
+src/lib/validation.ts       validateVariant(): errors and warnings for each network
+src/lib/connectors/         connector interface, mock connector, registry
+src/server/publisher.ts     scheduler, publishing, retries
+src/app/actions/            server actions (auth, workspaces, accounts, posts)
+src/app/w/[slug]/           dashboard, compose, calendar, posts, accounts, settings
+src/components/previews/    network previews
+src/components/composer/    composer and media uploader
+tests/                      Vitest tests (validation and scheduler)
+```
+
+## Scripts
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Development server |
+| `npm run build` / `npm start` | Production build and server |
+| `npm test` | Runs tests against the `postpilot_test` schema |
+| `npm run lint` | ESLint |
+| `npm run db:seed` | Resets the dev schema to demo data |
+| `npm run db:migrate` | Applies migrations |
+
+## Going live with real networks
+
+1. Create developer apps: Meta (Facebook and Instagram Graph API), TikTok (Content Posting API), X API (posting requires a paid tier), LinkedIn (Community Management API) and Google (YouTube Data API). Meta and TikTok review apps before they can publish publicly.
+2. Write a connector for each network that implements `PlatformConnector`: OAuth in `connect()` and uploads in `publish()`. Then call `registerConnector()` in `src/lib/connectors/index.ts`.
+3. Store tokens encrypted, and move media to public storage (for example S3), because the networks fetch media from a URL. `src/lib/storage.ts` is the only file that needs to change.
+4. For production, set a strong `SESSION_SECRET`, and run the scheduler as one dedicated process if you run several web servers.
+
+## Known limits (v1)
+
+- Uploaded files are served at unguessable URLs without a login check.
+- Invites are shown as a link; no email is sent.
+- Media dimensions are measured in the browser; the server doesn't re-encode or check the files.
