@@ -7,7 +7,7 @@ import { requireMember } from "@/lib/auth";
 import { PLATFORM_RULES, type Platform } from "@/lib/platforms";
 import { validateVariant, type MediaInfo } from "@/lib/validation";
 import { logActivity } from "@/lib/activity";
-import { processDue, refreshPostStatus } from "@/server/publisher";
+import { processDue, refreshPostStatus, wakeScheduler } from "@/server/publisher";
 
 const optionsSchema = z
   .object({
@@ -141,6 +141,7 @@ export async function savePost(input: SavePostInput): Promise<SavePostResult> {
   await logActivity(workspace.id, user.id, `${user.name} ${verb} for ${accounts.length} account${accounts.length > 1 ? "s" : ""}`);
 
   if (data.mode === "now") await processDue(new Date(), { postId: post.id });
+  wakeScheduler();
   const status = (await db.post.findUniqueOrThrow({ where: { id: post.id } })).status;
   revalidatePath(`/w/${data.slug}`, "layout");
   return { ok: true, postId: post.id, status };
@@ -180,6 +181,7 @@ export async function reschedulePost(slug: string, postId: string, isoDate: stri
     ),
   );
   await syncPostTime(postId);
+  wakeScheduler();
   revalidatePath(`/w/${slug}`, "layout");
 }
 
@@ -205,6 +207,7 @@ export async function retryPost(slug: string, postId: string) {
   await refreshPostStatus(postId);
   await logActivity(workspace.id, user.id, `${user.name} retried a failed post`);
   await processDue(new Date(), { postId });
+  wakeScheduler();
   revalidatePath(`/w/${slug}`, "layout");
 }
 
@@ -213,6 +216,7 @@ export async function unschedulePost(slug: string, postId: string) {
   await db.post.findFirstOrThrow({ where: { id: postId, workspaceId: workspace.id, status: "SCHEDULED" } });
   await db.postVariant.updateMany({ where: { postId, status: "SCHEDULED" }, data: { status: "DRAFT", nextAttemptAt: null } });
   await refreshPostStatus(postId);
+  wakeScheduler();
   revalidatePath(`/w/${slug}`, "layout");
 }
 

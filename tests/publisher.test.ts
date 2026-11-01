@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/lib/db";
 import { registerConnector } from "@/lib/connectors";
 import { MockConnector } from "@/lib/connectors/mock";
-import { MAX_ATTEMPTS, backoffMinutes, processDue, rollupStatus } from "@/server/publisher";
+import { MAX_ATTEMPTS, backoffMinutes, nextCheckTime, processDue, rollupStatus, schedulerTick, wakeScheduler } from "@/server/publisher";
 
 describe("rollupStatus", () => {
   it("derives the post status from its versions", () => {
@@ -16,6 +16,19 @@ describe("rollupStatus", () => {
 
   it("backs off 1, 2, 4 minutes", () => {
     expect([1, 2, 3].map(backoffMinutes)).toEqual([1, 2, 4]);
+  });
+});
+
+describe("nextCheckTime", () => {
+  const now = 1_000_000;
+
+  it("uses the safety check when nothing is scheduled or the next post is far away", () => {
+    expect(nextCheckTime(now, null, 5000)).toBe(now + 5000);
+    expect(nextCheckTime(now, new Date(now + 9000), 5000)).toBe(now + 5000);
+  });
+
+  it("uses the due time when it comes first", () => {
+    expect(nextCheckTime(now, new Date(now + 2000), 5000)).toBe(now + 2000);
   });
 });
 
@@ -82,6 +95,29 @@ describe("processDue", () => {
     expect(await processDue(new Date(later.getTime() + 1000))).toBe(1);
     p = await db.post.findUniqueOrThrow({ where: { id: post.id }, include: { variants: true } });
     expect(p.status).toBe("PUBLISHED");
+  });
+
+  it("scheduler leaves the database alone until a post is due or something changes", async () => {
+    const t0 = Date.now();
+    const hour = 3_600_000;
+    wakeScheduler();
+    expect(await schedulerTick(t0, hour)).toBe(true);
+
+    // Nothing is scheduled, so the next ticks skip the database until the safety check.
+    expect(await schedulerTick(t0 + 60_000, hour)).toBe(false);
+    expect(await schedulerTick(t0 + hour - 1, hour)).toBe(false);
+
+    // A new post wakes the scheduler, which then remembers its due time.
+    const due = new Date(t0 + 10 * 60_000);
+    const post = await makePost("Later today", due);
+    wakeScheduler();
+    expect(await schedulerTick(t0 + 60_000, hour)).toBe(true);
+    expect(await schedulerTick(t0 + 2 * 60_000, hour)).toBe(false);
+    expect((await db.post.findUniqueOrThrow({ where: { id: post.id } })).status).toBe("SCHEDULED");
+
+    // At the due time it publishes without being woken.
+    expect(await schedulerTick(due.getTime() + 1000, hour)).toBe(true);
+    expect((await db.post.findUniqueOrThrow({ where: { id: post.id } })).status).toBe("PUBLISHED");
   });
 
   it("does not publish the same version twice when two ticks overlap", async () => {

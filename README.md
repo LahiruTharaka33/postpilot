@@ -63,9 +63,48 @@ Host the app in the same region as the database (currently AWS us-east-1). Every
 
 ## How publishing works
 
-`src/server/publisher.ts` runs inside the Next.js server and is started from `src/instrumentation.ts`. Every 60 seconds (set with `SCHEDULER_INTERVAL_MS`) it finds post versions that are due and claims each one atomically, so no version is published twice. It then calls that network's connector. A failure is retried after 1 minute and then after 2 more; the third failure marks the version FAILED. The post's status (Published, Partial, Failed...) is derived from its versions.
+`src/server/publisher.ts` runs inside the Next.js server and is started from `src/instrumentation.ts`. Every 60 seconds (set with `SCHEDULER_INTERVAL_MS`) it wakes up, but it only reads the database when a post is due, after a post was changed, or once an hour as a safety check. That lets a free Neon database sleep, because a check every minute would use up its monthly compute. When posts are due, it claims each version atomically, so no version is published twice. It then calls that network's connector. A failure is retried after 1 minute and then after 2 more; the third failure marks the version FAILED. The post's status (Published, Partial, Failed...) is derived from its versions.
 
 To test failures, put `#fail` in a caption, or set `MOCK_FAIL_RATE` in `.env` (0 to 1).
+
+## Deploying on Render
+
+Create a **Web Service** from this repository in the **Virginia (US East)** region, next to the database:
+
+| Setting | Value |
+| --- | --- |
+| Build command | `npm ci && npx prisma migrate deploy && npm run build` |
+| Start command | `npm start` |
+| Health check path | `/api/health` |
+
+Set the variables from `.env.example`, with these differences:
+- Leave `&schema=dev` out of the database URLs.
+- Leave `R2_PREFIX` unset.
+- Use a new `SESSION_SECRET`.
+- Set `MOCK_FAIL_RATE` to `0`.
+
+**Free plan:** Render stops a free service after 15 minutes without traffic, and scheduled posts can't go out while it's stopped. To keep it awake, create a job at [cron-job.org](https://cron-job.org) that calls `https://YOUR-APP.onrender.com/api/health` every minute. That address never touches the database. **To upgrade later,** change the instance type to Starter and delete the cron job; nothing else changes.
+
+## Media storage (Cloudflare R2)
+
+Browsers upload straight to R2 using a short-lived signed link, so large videos don't pass through the server's memory.
+
+1. In the bucket's **Settings**, turn on public access (Public Development URL or a custom domain) and use that address as `R2_PUBLIC_URL`. The networks fetch media from it.
+2. Add this CORS policy in the same place, using your own app address:
+
+   ```json
+   [
+     {
+       "AllowedOrigins": ["http://localhost:3000", "https://YOUR-APP.onrender.com"],
+       "AllowedMethods": ["PUT"],
+       "AllowedHeaders": ["Content-Type"],
+       "MaxAgeSeconds": 3600
+     }
+   ]
+   ```
+3. Create an **R2 API token** with Object Read & Write access to this bucket only, and set `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`.
+
+Without these settings, local development saves uploads to the `uploads/` folder, and production refuses uploads.
 
 ## Project layout
 
@@ -77,6 +116,7 @@ src/lib/platforms.ts        rules for each network (limits, crops, options)
 src/lib/validation.ts       validateVariant(): errors and warnings for each network
 src/lib/connectors/         connector interface, mock connector, registry
 src/server/publisher.ts     scheduler, publishing, retries
+src/lib/r2.ts               Cloudflare R2 storage (signed uploads)
 src/app/actions/            server actions (auth, workspaces, accounts, posts)
 src/app/w/[slug]/           dashboard, compose, calendar, posts, accounts, settings
 src/components/previews/    network previews
@@ -99,11 +139,11 @@ tests/                      Vitest tests (validation and scheduler)
 
 1. Create developer apps: Meta (Facebook and Instagram Graph API), TikTok (Content Posting API), X API (posting requires a paid tier), LinkedIn (Community Management API) and Google (YouTube Data API). Meta and TikTok review apps before they can publish publicly.
 2. Write a connector for each network that implements `PlatformConnector`: OAuth in `connect()` and uploads in `publish()`. Then call `registerConnector()` in `src/lib/connectors/index.ts`.
-3. Store tokens encrypted, and move media to public storage (for example S3), because the networks fetch media from a URL. `src/lib/storage.ts` is the only file that needs to change.
+3. Store tokens encrypted.
 4. For production, set a strong `SESSION_SECRET`, and run the scheduler as one dedicated process if you run several web servers.
 
 ## Known limits (v1)
 
-- Uploaded files are served at unguessable URLs without a login check.
+- Uploaded files are public at unguessable URLs, because the networks must be able to fetch them.
 - Invites are shown as a link; no email is sent.
 - Media dimensions are measured in the browser; the server doesn't re-encode or check the files.

@@ -36,6 +36,34 @@ function measure(file: File): Promise<{ width: number; height: number; duration:
   });
 }
 
+async function postJson(url: string, body: unknown) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? "Upload failed");
+  return data;
+}
+
+/** Sends the file straight to storage when it's set up, otherwise through this server (local development). */
+async function sendFile(file: File, slug: string, dims: Awaited<ReturnType<typeof measure>>): Promise<ComposerMedia> {
+  const signed = await postJson("/api/upload/sign", { slug, type: file.type, size: file.size });
+  if (signed.mode === "direct") {
+    // A network or CORS failure rejects instead of returning a response.
+    const put = await fetch(signed.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file }).catch(() => null);
+    if (!put?.ok) throw new Error("The file couldn't be sent to storage. Check the bucket's CORS policy and try again.");
+    return postJson("/api/upload/complete", { slug, key: signed.key, fileName: file.name, ...dims });
+  }
+  const form = new FormData();
+  form.set("file", file);
+  form.set("slug", slug);
+  form.set("width", String(dims.width));
+  form.set("height", String(dims.height));
+  if (dims.duration != null) form.set("duration", String(dims.duration));
+  const res = await fetch("/api/upload", { method: "POST", body: form });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error ?? "Upload failed");
+  return body;
+}
+
 export function MediaUploader({
   slug,
   media,
@@ -59,17 +87,7 @@ export function MediaUploader({
     const added: ComposerMedia[] = [];
     for (const file of list) {
       try {
-        const dims = await measure(file);
-        const form = new FormData();
-        form.set("file", file);
-        form.set("slug", slug);
-        form.set("width", String(dims.width));
-        form.set("height", String(dims.height));
-        if (dims.duration != null) form.set("duration", String(dims.duration));
-        const res = await fetch("/api/upload", { method: "POST", body: form });
-        const body = await res.json();
-        if (!res.ok) throw new Error(body.error ?? "Upload failed");
-        added.push(body as ComposerMedia);
+        added.push(await sendFile(file, slug, await measure(file)));
       } catch (e) {
         setError(`${file.name}: ${e instanceof Error ? e.message : "upload failed"}`);
       } finally {
