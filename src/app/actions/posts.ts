@@ -8,26 +8,14 @@ import { PLATFORM_RULES, type Platform } from "@/lib/platforms";
 import { validateVariant, type MediaInfo } from "@/lib/validation";
 import { logActivity } from "@/lib/activity";
 import { processDue, refreshPostStatus, wakeScheduler } from "@/server/publisher";
+import { optionsSchema } from "@/lib/post-schema";
 
-const optionsSchema = z
-  .object({
-    aspect: z.enum(["1:1", "4:5", "9:16", "16:9", "1.91:1", "original"]).optional(),
-    focalX: z.number().min(0).max(100).optional(),
-    focalY: z.number().min(0).max(100).optional(),
-    title: z.string().max(200).optional(),
-    privacy: z.enum(["PUBLIC", "FRIENDS", "PRIVATE"]).optional(),
-    allowComments: z.boolean().optional(),
-    allowDuet: z.boolean().optional(),
-    visibility: z.enum(["PUBLIC", "CONNECTIONS"]).optional(),
-    firstComment: z.string().max(2200).optional(),
-    igFormat: z.enum(["FEED", "REEL"]).optional(),
-    mediaIds: z.array(z.string()).max(10).optional(),
-  })
-  .strict();
 
 const saveSchema = z.object({
   slug: z.string(),
   postId: z.string().optional(),
+  /** Set when the post was started from a post bank item, to count the use. */
+  bankId: z.string().optional(),
   baseCaption: z.string().max(70000),
   mediaIds: z.array(z.string()).max(10),
   mode: z.enum(["draft", "schedule", "now"]),
@@ -142,6 +130,12 @@ export async function savePost(input: SavePostInput): Promise<SavePostResult> {
 
   if (data.mode === "now") await processDue(new Date(), { postId: post.id });
   wakeScheduler();
+  if (data.bankId && !data.postId) {
+    await db.bankPost.updateMany({
+      where: { id: data.bankId, workspaceId: workspace.id },
+      data: { useCount: { increment: 1 }, lastUsedAt: new Date() },
+    });
+  }
   const status = (await db.post.findUniqueOrThrow({ where: { id: post.id } })).status;
   revalidatePath(`/w/${data.slug}`, "layout");
   return { ok: true, postId: post.id, status };

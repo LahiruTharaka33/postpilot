@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { savePost, duplicatePost, retryPost } from "@/app/actions/posts";
+import { saveBankPost } from "@/app/actions/bank";
 import { PLATFORMS, PLATFORM_RULES, defaultAspect, type Aspect, type Platform, type PlatformOptions } from "@/lib/platforms";
 import { validateVariant, type ValidationResult } from "@/lib/validation";
 import { COMMON_TIMEZONES, utcToZonedInput, zonedTimeToUtc } from "@/lib/time";
@@ -38,10 +39,24 @@ export interface ComposerInitial {
   }>;
 }
 
+/** A post bank item: content to start from, with suggested accounts but no time. */
+export interface BankSource {
+  bankId: string;
+  title: string;
+  baseCaption: string;
+  media: ComposerMedia[];
+  accountIds: string[];
+  custom: Partial<Record<Platform, { caption: string | null; options: PlatformOptions }>>;
+}
+
 interface Props {
   slug: string;
   accounts: ComposerAccount[];
   initial?: ComposerInitial;
+  /** Editing (or creating, without `source`) a post bank item instead of a post. */
+  bankMode?: boolean;
+  /** Content to start from: the bank item being edited, or the one being used for a new post. */
+  source?: BankSource;
   defaultDate?: string;
   suggestedHashtags: string[];
   canEdit: boolean;
@@ -71,7 +86,7 @@ function nextHour() {
   return d;
 }
 
-export function Composer({ slug, accounts, initial, defaultDate, suggestedHashtags, canEdit }: Props) {
+export function Composer({ slug, accounts, initial, bankMode = false, source, defaultDate, suggestedHashtags, canEdit }: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const browserTz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
@@ -82,15 +97,22 @@ export function Composer({ slug, accounts, initial, defaultDate, suggestedHashta
       initial.variants.some((v) => ["PUBLISHING", "PUBLISHED"].includes(v.status)));
   const readOnly = locked || !canEdit;
 
-  const [selected, setSelected] = useState<string[]>(() => initial?.variants.map((v) => v.accountId) ?? []);
-  const [caption, setCaption] = useState(initial?.baseCaption ?? "");
-  const [media, setMedia] = useState<ComposerMedia[]>(initial?.media ?? []);
+  const [selected, setSelected] = useState<string[]>(
+    () =>
+      initial?.variants.map((v) => v.accountId) ??
+      // Suggested accounts from the bank, minus any that were disconnected since.
+      source?.accountIds.filter((id) => accounts.some((a) => a.id === id && a.status === "CONNECTED")) ??
+      [],
+  );
+  const [caption, setCaption] = useState(initial?.baseCaption ?? source?.baseCaption ?? "");
+  const [media, setMedia] = useState<ComposerMedia[]>(initial?.media ?? source?.media ?? []);
   const [custom, setCustom] = useState<Custom>(() => {
     const c = emptyCustom();
     for (const v of initial?.variants ?? []) {
       const acc = accounts.find((a) => a.id === v.accountId);
       if (acc) c[acc.platform] = { caption: v.caption, options: v.options };
     }
+    if (!initial && source) Object.assign(c, source.custom);
     return c;
   });
   const [tab, setTab] = useState<"ALL" | Platform>("ALL");
@@ -103,6 +125,9 @@ export function Composer({ slug, accounts, initial, defaultDate, suggestedHashta
   const [result, setResult] = useState<{ error: string; details?: string[] } | null>(null);
   const [showEmoji, setShowEmoji] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [bankTitle, setBankTitle] = useState(bankMode ? source?.title ?? "" : "");
+  const [bankOpen, setBankOpen] = useState(false);
+  const [bankMessage, setBankMessage] = useState<string | null>(null);
 
   // Set the initial date in the browser so it uses the viewer's time zone.
   useEffect(() => {
@@ -189,6 +214,7 @@ export function Composer({ slug, accounts, initial, defaultDate, suggestedHashta
       const res = await savePost({
         slug,
         postId: initial?.postId,
+        bankId: !bankMode && !initial ? source?.bankId : undefined,
         baseCaption: caption,
         mediaIds: media.map((m) => m.id),
         mode,
@@ -210,6 +236,43 @@ export function Composer({ slug, accounts, initial, defaultDate, suggestedHashta
     });
   }
 
+  /** Saves the current content to the post bank: as a new item, or over the item being edited. */
+  function saveToBank(asNew: boolean) {
+    setResult(null);
+    setBankMessage(null);
+    startTransition(async () => {
+      const res = await saveBankPost({
+        slug,
+        bankId: asNew ? undefined : source?.bankId,
+        title: bankTitle,
+        baseCaption: caption,
+        mediaIds: media.map((m) => m.id),
+        accountIds: selected,
+        custom: Object.fromEntries(
+          platforms.map((p) => [
+            p,
+            {
+              caption: custom[p].caption,
+              // Drop media that was removed from the post since it was picked for this network.
+              options: { ...custom[p].options, ...(custom[p].options.mediaIds ? { mediaIds: mediaFor(p).map((m) => m.id) } : {}) },
+            },
+          ]),
+        ),
+      });
+      if (!res.ok) {
+        setResult({ error: res.error });
+        return;
+      }
+      if (bankMode) {
+        router.push(`/w/${slug}/bank?highlight=${res.bankId}`);
+        router.refresh();
+      } else {
+        setBankOpen(false);
+        setBankMessage(`Saved "${bankTitle.trim()}" to the post bank.`);
+      }
+    });
+  }
+
   const connected = accounts.filter((a) => a.status === "CONNECTED" || selected.includes(a.id));
   const editingCaption = tab === "ALL" ? caption : captionFor(tab);
   const PreviewComponent = activePreview ? PREVIEWS[activePreview] : null;
@@ -218,6 +281,26 @@ export function Composer({ slug, accounts, initial, defaultDate, suggestedHashta
   return (
     <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_400px]">
       <div className="min-w-0 space-y-5">
+        {bankMode && (
+          <section className="card p-4">
+            <label className="label" htmlFor="bank-title">Name</label>
+            <input
+              id="bank-title"
+              className="input"
+              maxLength={120}
+              value={bankTitle}
+              disabled={readOnly}
+              placeholder="e.g. Weekend brunch promo"
+              onChange={(e) => setBankTitle(e.target.value)}
+            />
+            <p className="mt-1 text-xs text-zinc-500">Only your team sees this name. Post bank items aren&apos;t scheduled; use one whenever you want to post it.</p>
+          </section>
+        )}
+        {!bankMode && !initial && source && (
+          <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-800 dark:border-indigo-900 dark:bg-indigo-950 dark:text-indigo-200">
+            Started from the post bank item <b>{source.title}</b>. Changes here don&apos;t affect the bank copy.
+          </div>
+        )}
         {initial && (
           <div className="card flex flex-wrap items-center gap-3 p-4">
             <StatusBadge status={initial.status} />
@@ -267,7 +350,7 @@ export function Composer({ slug, accounts, initial, defaultDate, suggestedHashta
         <fieldset disabled={readOnly} className="min-w-0 space-y-5">
           <section className="card p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="font-semibold">Post to</h2>
+              <h2 className="font-semibold">{bankMode ? "Suggested accounts" : "Post to"}</h2>
               {connected.length > 0 && !readOnly && (
                 <button type="button" className="text-sm text-indigo-600 hover:underline" onClick={() => setSelected(selected.length === connected.length ? [] : connected.map((a) => a.id))}>
                   {selected.length === connected.length ? "Clear" : "Select all"}
@@ -407,6 +490,29 @@ export function Composer({ slug, accounts, initial, defaultDate, suggestedHashta
             </div>
           </section>
 
+          {bankMode ? (
+            <section className="card p-4">
+              <h2 className="mb-1 font-semibold">Save to post bank</h2>
+              <p className="mb-3 text-sm text-zinc-500">It stays in the bank after each use, ready for next time.</p>
+              {result && (
+                <p className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{result.error}</p>
+              )}
+              {!readOnly && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" className="btn-primary" disabled={pending || !bankTitle.trim()} onClick={() => saveToBank(false)}>
+                    {source ? "Save changes" : "Save to bank"}
+                  </button>
+                  {source && (
+                    <button type="button" className="btn-secondary" disabled={pending || !bankTitle.trim()} onClick={() => saveToBank(true)}>
+                      Save as a new copy
+                    </button>
+                  )}
+                  <Link href={`/w/${slug}/bank`} className="btn-secondary">Cancel</Link>
+                  <span className="text-sm text-zinc-500">{pending ? "Saving…" : !bankTitle.trim() ? "Give it a name" : ""}</span>
+                </div>
+              )}
+            </section>
+          ) : (
           <section className="card p-4">
             <h2 className="mb-3 font-semibold">When</h2>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -482,12 +588,48 @@ export function Composer({ slug, accounts, initial, defaultDate, suggestedHashta
                 <button type="button" className="btn-secondary" disabled={pending || selected.length === 0} onClick={() => submit("draft")}>
                   Save draft
                 </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={pending}
+                  aria-expanded={bankOpen}
+                  onClick={() => {
+                    setBankOpen((o) => !o);
+                    setBankMessage(null);
+                    if (!bankTitle) setBankTitle(caption.trim().split("\n")[0].slice(0, 60));
+                  }}
+                >
+                  Save to bank
+                </button>
                 <span className="text-sm text-zinc-500">
                   {pending ? "Saving…" : selected.length === 0 ? "Pick at least one account" : errorCount > 0 ? `${errorCount} issue${errorCount > 1 ? "s" : ""} to fix` : "Ready to go"}
                 </span>
               </div>
             )}
+
+            {!readOnly && bankOpen && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
+                <label htmlFor="bank-title-inline" className="text-sm font-medium">Name in the post bank</label>
+                <input
+                  id="bank-title-inline"
+                  className="input min-w-48 flex-1"
+                  maxLength={120}
+                  value={bankTitle}
+                  placeholder="e.g. Weekend brunch promo"
+                  onChange={(e) => setBankTitle(e.target.value)}
+                />
+                <button type="button" className="btn-primary" disabled={pending || !bankTitle.trim()} onClick={() => saveToBank(true)}>
+                  Save
+                </button>
+              </div>
+            )}
+            {bankMessage && (
+              <p className="mt-3 text-sm text-emerald-600">
+                {bankMessage} <Link href={`/w/${slug}/bank`} className="underline">Open the post bank</Link>
+              </p>
+            )}
           </section>
+          )}
         </fieldset>
       </div>
 

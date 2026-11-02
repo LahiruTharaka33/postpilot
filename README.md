@@ -58,6 +58,7 @@ Host the app in the same region as the database (currently AWS us-east-1). Every
 - **Validation** against each network's rules (caption length, hashtags, media count and type, video length, aspect ratio, required fields) before anything can be scheduled.
 - **Scheduling** with a time zone picker, publish now, or save as a draft. Tick "Post at a different time on each network" to give each network its own date and time (e.g. Facebook today 5:00 PM, Instagram tomorrow 7:00 AM).
 - **Calendar** with month and week views: drag posts to reschedule, drag drafts onto a day, click a day to start a post, and filter by network or account. A post with several times shows one chip per time (marked ⧉), and dragging a chip moves only those networks.
+- **Post bank:** a library of reusable posts that aren't tied to a time. Save from the composer with **Save to bank**, or add one on the Post bank page. **Use** starts a new post pre-filled with its caption, media, network tweaks and suggested accounts, and the bank copy stays. Each item shows how often it's been used.
 - **Posts list** with status filters, retry for failed posts, unschedule, duplicate and delete.
 - **Dashboard** showing counts, upcoming posts, connected accounts and recent activity.
 

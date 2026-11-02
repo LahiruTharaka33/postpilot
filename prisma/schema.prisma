@@ -19,6 +19,7 @@ model User {
   memberships  Membership[]
   posts        Post[]
   activities   Activity[]
+  bankPosts    BankPost[]
 }
 
 model Workspace {
@@ -32,6 +33,27 @@ model Workspace {
   media       Media[]
   invites     Invite[]
   activities  Activity[]
+  bankPosts   BankPost[]
+}
+
+/// A reusable post in the post bank. Not tied to a time; each "Use" starts a new Post from it.
+model BankPost {
+  id          String    @id @default(cuid())
+  title       String
+  baseCaption String
+  mediaIds    String    @default("[]") // JSON array of Media ids, in order
+  accountIds  String    @default("[]") // JSON array of suggested SocialAccount ids
+  custom      String    @default("{}") // JSON: per-platform { caption, options }, as in the composer
+  useCount    Int       @default(0)
+  lastUsedAt  DateTime?
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  author      User      @relation(fields: [authorId], references: [id])
+  authorId    String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([workspaceId, updatedAt])
 }
 
 model Membership {
