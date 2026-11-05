@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
-import { getConnector } from "@/lib/connectors";
+import { getConnector, type PublishResult } from "@/lib/connectors";
+import { decryptToken } from "@/lib/crypto";
 import { parseOptions, type Platform } from "@/lib/platforms";
 import type { PostStatus } from "@/lib/constants";
 
@@ -63,11 +64,11 @@ async function publishClaimed(variantId: string, now: Date) {
     .filter((m) => m != null)
     .map((m) => ({ url: m.url, type: m.type as "IMAGE" | "VIDEO" }));
 
-  const connector = getConnector(variant.account.platform as Platform);
-  let result;
+  const connector = getConnector(variant.account.platform as Platform, variant.account.provider);
+  let result: PublishResult;
   try {
     result = await connector.publish({
-      account: variant.account,
+      account: { ...variant.account, accessToken: decryptToken(variant.account.accessToken) },
       caption: variant.caption ?? variant.post.baseCaption,
       media,
       options,
@@ -84,7 +85,7 @@ async function publishClaimed(variantId: string, now: Date) {
       data: { status: "PUBLISHED", attempts, publishedAt: now, externalUrl: result.url, error: null, nextAttemptAt: null },
     });
     await db.activity.create({ data: { workspaceId: variant.post.workspaceId, message: `Published to ${label}` } });
-  } else if (result.retryable && attempts < MAX_ATTEMPTS) {
+  } else if (result.retryable && !result.needsReconnect && attempts < MAX_ATTEMPTS) {
     const next = new Date(now.getTime() + backoffMinutes(attempts) * 60_000);
     await db.postVariant.update({
       where: { id: variantId },
@@ -98,6 +99,10 @@ async function publishClaimed(variantId: string, now: Date) {
     await db.activity.create({
       data: { workspaceId: variant.post.workspaceId, message: `Failed to publish to ${label}: ${result.error}` },
     });
+    // The owner sees "Reconnect" on the Accounts page, and the account can't be picked until then.
+    if (result.needsReconnect) {
+      await db.socialAccount.update({ where: { id: variant.accountId }, data: { status: "DISCONNECTED" } });
+    }
   }
   await refreshPostStatus(variant.postId);
   return result;

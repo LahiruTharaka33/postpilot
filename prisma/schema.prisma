@@ -85,13 +85,20 @@ model SocialAccount {
   handle      String
   displayName String
   avatarColor String
-  // Filled by real connectors later; mock connectors leave a placeholder.
+  avatarUrl   String?
+  // MOCK = simulated (demo) account; META = a real Facebook Page or Instagram account.
+  provider    String        @default("MOCK")
+  // The network's own id: the Facebook Page id or the Instagram user id. Null for mock accounts.
+  externalId  String?
+  // Real connectors store the token encrypted (see src/lib/crypto.ts); mock connectors leave a placeholder.
   accessToken String?
   status      String        @default("CONNECTED") // CONNECTED | DISCONNECTED
   workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   workspaceId String
   createdAt   DateTime      @default(now())
   variants    PostVariant[]
+
+  @@index([workspaceId, platform, externalId])
 }
 
 model Media {

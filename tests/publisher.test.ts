@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/lib/db";
 import { registerConnector } from "@/lib/connectors";
 import { MockConnector } from "@/lib/connectors/mock";
+import { encryptToken } from "@/lib/crypto";
 import { MAX_ATTEMPTS, backoffMinutes, nextCheckTime, processDue, rollupStatus, schedulerTick, wakeScheduler } from "@/server/publisher";
 
 describe("rollupStatus", () => {
@@ -145,5 +146,28 @@ describe("processDue", () => {
         expect(p.variants[0].error).toMatch(/forced failure/);
       }
     }
+  });
+
+  it("uses the account's real connector with a decrypted token, and asks for a reconnect when the token stops working", async () => {
+    const seen: Array<string | null> = [];
+    registerConnector({
+      platform: "FACEBOOK",
+      provider: "META",
+      connect: async () => ({ accessToken: "" }),
+      getProfile: async (a) => ({ handle: a.handle, displayName: a.handle }),
+      publish: async (req) => {
+        seen.push(req.account.accessToken);
+        return { ok: false, error: "Facebook: access expired", retryable: false, needsReconnect: true };
+      },
+    });
+    const now = new Date();
+    const post = await makePost("Real", new Date(now.getTime() - 1000));
+    const fb = post.variants[0];
+    await db.socialAccount.update({ where: { id: fb.accountId }, data: { provider: "META", externalId: "123", accessToken: encryptToken("page-token") } });
+
+    await processDue(now);
+    expect(seen).toEqual(["page-token"]);
+    expect((await db.postVariant.findUniqueOrThrow({ where: { id: fb.id } })).status).toBe("FAILED");
+    expect((await db.socialAccount.findUniqueOrThrow({ where: { id: fb.accountId } })).status).toBe("DISCONNECTED");
   });
 });

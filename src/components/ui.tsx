@@ -32,7 +32,11 @@ export function PlatformIcon({ platform, size = 20, className = "" }: { platform
   );
 }
 
-export function Avatar({ name, color, size = 32 }: { name: string; color: string; size?: number }) {
+export function Avatar({ name, color, size = 32, imageUrl }: { name: string; color: string; size?: number; imageUrl?: string | null }) {
+  if (imageUrl) {
+    // eslint-disable-next-line @next/next/no-img-element -- profile pictures come from the networks' own CDNs
+    return <img src={imageUrl} alt="" width={size} height={size} className="shrink-0 rounded-full object-cover" style={{ width: size, height: size }} />;
+  }
   const initials = name
     .split(/\s+/)
     .map((w) => w[0])

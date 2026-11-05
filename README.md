@@ -81,7 +81,8 @@ Create a **Web Service** from this repository in the **Virginia (US East)** regi
 Set the variables from `.env.example`, with these differences:
 - Leave `&schema=dev` out of the database URLs.
 - Leave `R2_PREFIX` unset.
-- Use a new `SESSION_SECRET`.
+- Use a new `SESSION_SECRET` and a new `TOKEN_ENCRYPTION_KEY`.
+- Set `APP_URL` to the service's https address.
 - Set `MOCK_FAIL_RATE` to `0`.
 
 **Free plan:** Render stops a free service after 15 minutes without traffic, and scheduled posts can't go out while it's stopped. To keep it awake, create a job at [cron-job.org](https://cron-job.org) that calls `https://YOUR-APP.onrender.com/api/health` every minute. That address never touches the database. **To upgrade later,** change the instance type to Starter and delete the cron job; nothing else changes.
@@ -115,7 +116,8 @@ prisma/migrations/          database migrations
 prisma/seed.ts              demo data
 src/lib/platforms.ts        rules for each network (limits, crops, options)
 src/lib/validation.ts       validateVariant(): errors and warnings for each network
-src/lib/connectors/         connector interface, mock connector, registry
+src/lib/connectors/         connector interface, mock and Meta connectors, registry
+src/lib/meta.ts             Meta Graph API and Facebook sign-in
 src/server/publisher.ts     scheduler, publishing, retries
 src/lib/r2.ts               Cloudflare R2 storage (signed uploads)
 src/app/actions/            server actions (auth, workspaces, accounts, posts)
@@ -138,10 +140,21 @@ tests/                      Vitest tests (validation and scheduler)
 
 ## Going live with real networks
 
-1. Create developer apps: Meta (Facebook and Instagram Graph API), TikTok (Content Posting API), X API (posting requires a paid tier), LinkedIn (Community Management API) and Google (YouTube Data API). Meta and TikTok review apps before they can publish publicly.
-2. Write a connector for each network that implements `PlatformConnector`: OAuth in `connect()` and uploads in `publish()`. Then call `registerConnector()` in `src/lib/connectors/index.ts`.
-3. Store tokens encrypted.
-4. For production, set a strong `SESSION_SECRET`, and run the scheduler as one dedicated process if you run several web servers.
+### Facebook and Instagram (built)
+
+Owners connect real accounts on the Accounts page with **Connect with Facebook**: Facebook's sign-in asks which Pages to share, then PostPilot's page picker saves the chosen Pages and their linked Instagram professional accounts. Page tokens are stored encrypted with `TOKEN_ENCRYPTION_KEY`. Code: `src/lib/meta.ts` (Graph API and sign-in), `src/app/api/connect/meta/`, `src/app/w/[slug]/accounts/meta/` (page picker) and `src/lib/connectors/meta.ts` (publishing).
+
+1. In the Meta app, add the use cases **Manage everything on your Page** and **Manage messaging & content on Instagram**, with `pages_show_list`, `pages_manage_posts`, `pages_read_engagement`, `business_management`, `instagram_basic` and `instagram_content_publish`.
+2. Under **Facebook Login for Business**, add `APP_URL/api/connect/meta/callback` to **Valid OAuth Redirect URIs**, and create a **Configuration** with those permissions and the Pages and Instagram assets.
+3. Set `META_APP_ID`, `META_APP_SECRET`, `META_LOGIN_CONFIG_ID`, `APP_URL` and `TOKEN_ENCRYPTION_KEY`.
+
+While the Meta app is in development mode, only people listed under its **App roles** can connect. Anyone can after App Review approves the permissions. Media must be in R2, because Meta downloads it from its URL. Instagram publishes the original image, so its aspect ratio must be between 4:5 and 1.91:1; the composer's crop is only a preview. First comments need `pages_manage_engagement` (Facebook) and `instagram_manage_comments` (Instagram); without them the post still goes out and the comment is skipped.
+
+### Other networks
+
+1. Create developer apps: TikTok (Content Posting API), X API (posting requires a paid tier), LinkedIn (Community Management API) and Google (YouTube Data API). TikTok reviews apps before they can publish publicly.
+2. Write a connector for each network that implements `PlatformConnector` with its own `provider`, add a sign-in flow like Meta's, and return it from `getConnector()` in `src/lib/connectors/index.ts`.
+3. For production, set a strong `SESSION_SECRET`, and run the scheduler as one dedicated process if you run several web servers.
 
 ## Known limits (v1)
 
