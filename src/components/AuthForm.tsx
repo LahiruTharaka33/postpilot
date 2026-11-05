@@ -10,6 +10,13 @@ export function AuthForm({ mode, next }: { mode: "login" | "signup"; next?: stri
   return (
     <form action={action} className="space-y-4">
       <input type="hidden" name="next" value={next ?? ""} />
+      {invited && (
+        <p className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-800 dark:border-indigo-900 dark:bg-indigo-950 dark:text-indigo-200">
+          {mode === "login"
+            ? "You've been invited to a workspace. Log in to accept the invite, or sign up below if you don't have an account yet."
+            : "You've been invited to a workspace. Create your account to accept the invite."}
+        </p>
+      )}
       {mode === "signup" && (
         <div>
           <label className="label" htmlFor="name">Your name</label>
